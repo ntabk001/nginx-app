@@ -1,0 +1,355 @@
+# Hướng dẫn Cài đặt ELK Stack từ File Tarball trên RHEL 8 với 3 Node Master, 3 Node Data + Ingest và Filebeat, Sử dụng Chứng chỉ Tự Sinh
+
+## Giới thiệu
+Hướng dẫn này cung cấp cách cài đặt ELK Stack (Elasticsearch, Logstash, Kibana) và Filebeat từ file tarball trên RHEL 8, với:
+- **3 node master**: Chỉ đảm nhận vai trò master-eligible (quản lý cluster).
+- **3 node data + ingest**: Lưu trữ dữ liệu và xử lý ingest pipeline.
+- **Kibana và Logstash**: Cài trên một node riêng (kibana.example.com).
+- **Filebeat**: Cài trên một node riêng hoặc client để thu thập log.
+- **Chứng chỉ tự sinh**: Kích hoạt bảo mật TLS/SSL.
+
+**Yêu cầu hệ thống** (mỗi node):
+- RHEL 8 (hoặc Rocky Linux 8 / AlmaLinux 8).
+- Ít nhất 4GB RAM (khuyến nghị 8GB+ cho node data), 2 CPU cores.
+- 50GB+ ổ đĩa (SSD khuyến nghị cho data nodes).
+- Java 11+ (cài thủ công nếu cần).
+- Tắt SELinux: `sudo setenforce 0` và chỉnh `/etc/selinux/config` thành `SELINUX=permissive`.
+- Cập nhật hệ thống: `sudo dnf update -y`.
+- Mở firewall: Port 9200 (HTTP), 9300 (transport), 5601 (Kibana), 5044 (Filebeat).
+
+**Giả định hostname và IP** (đã sửa IP cho Kibana/Logstash):
+| Node Type     | Hostname          | IP Address       |
+|---------------|-------------------|------------------|
+| Master 1     | master1.example.com | 192.168.1.101   |
+| Master 2     | master2.example.com | 192.168.1.102   |
+| Master 3     | master3.example.com | 192.168.1.103   |
+| Data/Ingest 1| data1.example.com  | 192.168.1.201   |
+| Data/Ingest 2| data2.example.com  | 192.168.1.202   |
+| Data/Ingest 3| data3.example.com  | 192.168.1.203   |
+| Kibana/Logstash | kibana.example.com | 192.168.1.204   |
+
+Cấu hình `/etc/hosts` trên tất cả node:
+```
+192.168.1.101 master1.example.com
+192.168.1.102 master2.example.com
+192.168.1.103 master3.example.com
+192.168.1.201 data1.example.com
+192.168.1.202 data2.example.com
+192.168.1.203 data3.example.com
+192.168.1.204 kibana.example.com
+```
+
+Phiên bản: Elasticsearch 8.x (mới nhất tính đến 2025).
+
+## Bước 1: Chuẩn bị Môi trường
+Trên **tất cả node**:
+1. Cài Java 11:
+   ```bash
+   sudo dnf install -y java-11-openjdk java-11-openjdk-devel
+   export JAVA_HOME=/usr/lib/jvm/java-11-openjdk
+   ```
+2. Tạo user elasticsearch:
+   ```bash
+   sudo useradd -m -s /bin/bash elasticsearch
+   ```
+
+## Bước 2: Tải và Cài đặt Tarball
+Thực hiện trên **tất cả node** cho Elasticsearch, trên **node kibana** cho Kibana/Logstash, và trên **node client** (hoặc kibana) cho Filebeat.
+
+1. **Elasticsearch**:
+   ```bash
+   wget https://artifacts.elastic.co/downloads/elasticsearch/elasticsearch-8.x.x-linux-x86_64.tar.gz
+   tar -xzf elasticsearch-8.x.x-linux-x86_64.tar.gz -C /opt/
+   sudo mv /opt/elasticsearch-8.x.x /opt/elasticsearch
+   sudo chown -R elasticsearch:elasticsearch /opt/elasticsearch
+   ```
+
+2. **Kibana** (trên node kibana):
+   ```bash
+   wget https://artifacts.elastic.co/downloads/kibana/kibana-8.x.x-linux-x86_64.tar.gz
+   tar -xzf kibana-8.x.x-linux-x86_64.tar.gz -C /opt/
+   sudo mv /opt/kibana-8.x.x /opt/kibana
+   sudo chown -R elasticsearch:elasticsearch /opt/kibana
+   ```
+
+3. **Logstash** (trên node kibana):
+   ```bash
+   wget https://artifacts.elastic.co/downloads/logstash/logstash-8.x.x-linux-x86_64.tar.gz
+   tar -xzf logstash-8.x.x-linux-x86_64.tar.gz -C /opt/
+   sudo mv /opt/logstash-8.x.x /opt/logstash
+   sudo chown -R elasticsearch:elasticsearch /opt/logstash
+   ```
+
+4. **Filebeat** (trên node client hoặc kibana):
+   ```bash
+   wget https://artifacts.elastic.co/downloads/beats/filebeat/filebeat-8.x.x-linux-x86_64.tar.gz
+   tar -xzf filebeat-8.x.x-linux-x86_64.tar.gz -C /opt/
+   sudo mv /opt/filebeat-8.x.x /opt/filebeat
+   sudo chown -R elasticsearch:elasticsearch /opt/filebeat
+   ```
+
+## Bước 3: Sinh Chứng chỉ Tự Ký
+Thực hiện trên **master1** để sinh CA và certs, sau đó phân phối.
+
+1. Tạo thư mục certs:
+   ```bash
+   sudo mkdir -p /etc/elasticsearch/certs
+   sudo chown elasticsearch:elasticsearch /etc/elasticsearch/certs
+   cd /opt/elasticsearch
+   ```
+
+2. Sinh CA:
+   ```bash
+   sudo -u elasticsearch bin/elasticsearch-certutil ca --pem --out /etc/elasticsearch/certs/elastic-stack-ca.zip
+   cd /etc/elasticsearch/certs
+   sudo unzip elastic-stack-ca.zip
+   sudo rm elastic-stack-ca.zip
+   ```
+
+3. Sinh certs cho từng node:
+   - Master nodes (lặp cho master1, master2, master3):
+     ```bash
+     sudo -u elasticsearch /opt/elasticsearch/bin/elasticsearch-certutil cert --ca /etc/elasticsearch/certs/ca/ca.p12 --ca-pass "" --name master1.example.com --dns master1.example.com --ip 192.168.1.101 --out /etc/elasticsearch/certs/master1.zip
+     sudo unzip master1.zip -d /etc/elasticsearch/certs/master1
+     sudo rm master1.zip
+     ```
+   - Data/Ingest nodes (lặp cho data1, data2, data3):
+     ```bash
+     sudo -u elasticsearch /opt/elasticsearch/bin/elasticsearch-certutil cert --ca /etc/elasticsearch/certs/ca/ca.p12 --ca-pass "" --name data1.example.com --dns data1.example.com --ip 192.168.1.201 --out /etc/elasticsearch/certs/data1.zip
+     sudo unzip data1.zip -d /etc/elasticsearch/certs/data1
+     sudo rm data1.zip
+     ```
+   - Kibana node:
+     ```bash
+     sudo -u elasticsearch /opt/elasticsearch/bin/elasticsearch-certutil cert --ca /etc/elasticsearch/certs/ca/ca.p12 --ca-pass "" --name kibana.example.com --dns kibana.example.com --ip 192.168.1.204 --out /etc/elasticsearch/certs/kibana.zip
+     sudo unzip kibana.zip -d /etc/elasticsearch/certs/kibana
+     sudo rm kibana.zip
+     ```
+
+4. Phân phối certs:
+   ```bash
+   scp /etc/elasticsearch/certs/ca/ca.crt user@master2:/etc/elasticsearch/certs/ca.crt
+   scp -r /etc/elasticsearch/certs/master1 user@master2:/etc/elasticsearch/certs/
+   # Lặp cho các node master, data và kibana
+   ```
+
+5. Đặt quyền:
+   ```bash
+   sudo chown -R elasticsearch:elasticsearch /etc/elasticsearch/certs
+   sudo chmod 750 /etc/elasticsearch/certs/ca
+   sudo chmod 640 /etc/elasticsearch/certs/ca/ca.*
+   sudo chmod -R 750 /etc/elasticsearch/certs/[node-name]
+   sudo chmod 640 /etc/elasticsearch/certs/[node-name]/*
+   ```
+
+## Bước 4: Cấu hình Elasticsearch
+Chỉnh sửa `/opt/elasticsearch/config/elasticsearch.yml` trên từng node.
+
+### 4.1. Cấu hình Chung
+```yaml
+cluster.name: elk-cluster
+network.host: _site_
+http.port: 9200
+transport.port: 9300
+discovery.seed_hosts: ["master1.example.com:9300", "master2.example.com:9300", "master3.example.com:9300"]
+cluster.initial_master_nodes: ["master1.example.com", "master2.example.com", "master3.example.com"]
+path.data: /var/lib/elasticsearch
+path.logs: /var/log/elasticsearch
+xpack.security.enabled: true
+xpack.security.transport.ssl.enabled: true
+xpack.security.transport.ssl.verification_mode: certificate
+xpack.security.transport.ssl.keystore.path: /etc/elasticsearch/certs/${node.name}/${node.name}.p12
+xpack.security.transport.ssl.truststore.path: /etc/elasticsearch/certs/ca/ca.p12
+xpack.security.http.ssl.enabled: true
+xpack.security.http.ssl.keystore.path: /etc/elasticsearch/certs/${node.name}/${node.name}.p12
+xpack.security.http.ssl.truststore.path: /etc/elasticsearch/certs/ca/ca.p12
+```
+
+### 4.2. Master Nodes
+```yaml
+node.name: master1.example.com  # Thay cho từng node
+node.roles: ["master"]
+```
+
+### 4.3. Data + Ingest Nodes
+```yaml
+node.name: data1.example.com  # Thay cho từng node
+node.roles: ["data", "ingest"]
+```
+
+### 4.4. Tạo thư mục dữ liệu và log
+Trên **tất cả node ES**:
+```bash
+sudo mkdir -p /var/lib/elasticsearch /var/log/elasticsearch
+sudo chown elasticsearch:elasticsearch /var/lib/elasticsearch /var/log/elasticsearch
+```
+
+### 4.5. Khởi động Elasticsearch
+Tạo systemd service `/etc/systemd/system/elasticsearch.service` trên **tất cả node ES**:
+```ini
+[Unit]
+Description=Elasticsearch
+After=network.target
+
+[Service]
+Type=forking
+User=elasticsearch
+Group=elasticsearch
+ExecStart=/opt/elasticsearch/bin/elasticsearch -d -p /opt/elasticsearch/elasticsearch.pid
+ExecStop=/bin/kill -TERM $MAINPID
+Restart=on-failure
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Khởi động:
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable elasticsearch
+sudo systemctl start elasticsearch
+```
+
+Kiểm tra: `curl -u elastic:<password> -k https://localhost:9200/_cluster/health?pretty` (password tạo bằng `/opt/elasticsearch/bin/elasticsearch-reset-password -u elastic`).
+
+## Bước 5: Cấu hình Logstash
+Trên **node kibana** (192.168.1.204):
+1. Tạo pipeline `/opt/logstash/config/logstash.conf`:
+   ```conf
+   input {
+     beats { port => 5044 }
+   }
+   filter {
+     grok { match => { "message" => "%{SYSLOGTIMESTAMP:timestamp} %{SYSLOGHOST:hostname} %{DATA:program}(?:\[%{POSINT:pid}\])?: %{GREEDYDATA:syslog_message}" } }
+   }
+   output {
+     elasticsearch {
+       hosts => ["https://data1.example.com:9200", "https://data2.example.com:9200", "https://data3.example.com:9200"]
+       ssl_certificate_verification => false
+       user => "elastic"
+       password => "<password>"
+       index => "logstash-%{+YYYY.MM.dd}"
+     }
+   }
+   ```
+
+2. Tạo systemd service `/etc/systemd/system/logstash.service`:
+   ```ini
+   [Unit]
+   Description=Logstash
+   After=network.target
+
+   [Service]
+   Type=simple
+   User=elasticsearch
+   Group=elasticsearch
+   ExecStart=/opt/logstash/bin/logstash -f /opt/logstash/config/logstash.conf
+   Restart=on-failure
+
+   [Install]
+   WantedBy=multi-user.target
+   ```
+
+3. Khởi động:
+   ```bash
+   sudo systemctl daemon-reload
+   sudo systemctl enable logstash
+   sudo systemctl start logstash
+   ```
+
+## Bước 6: Cấu hình Kibana
+Trên **node kibana** (192.168.1.204):
+1. Chỉnh sửa `/opt/kibana/config/kibana.yml`:
+   ```yaml
+   server.port: 5601
+   server.host: "0.0.0.0"
+   server.name: kibana.example.com
+   elasticsearch.hosts: ["https://data1.example.com:9200", "https://data2.example.com:9200", "https://data3.example.com:9200"]
+   elasticsearch.ssl.certificateAuthorities: ["/etc/elasticsearch/certs/ca/ca.crt"]
+   elasticsearch.ssl.verificationMode: certificate
+   elasticsearch.username: "kibana_system"
+   elasticsearch.password: "<password>"
+   xpack.security.enabled: true
+   ```
+
+2. Tạo user kibana_system:
+   ```bash
+   sudo -u elasticsearch /opt/elasticsearch/bin/elasticsearch-users useradd kibana_system -p <password> -r kibana_system
+   ```
+
+3. Tạo systemd service `/etc/systemd/system/kibana.service`:
+   ```ini
+   [Unit]
+   Description=Kibana
+   After=network.target
+
+   [Service]
+   Type=simple
+   User=elasticsearch
+   Group=elasticsearch
+   ExecStart=/opt/kibana/bin/kibana
+   Restart=on-failure
+
+   [Install]
+   WantedBy=multi-user.target
+   ```
+
+4. Khởi động:
+   ```bash
+   sudo systemctl daemon-reload
+   sudo systemctl enable kibana
+   sudo systemctl start kibana
+   ```
+
+5. Truy cập: https://192.168.1.204:5601.
+
+## Bước 7: Cài đặt và Cấu hình Filebeat
+Trên **node client** hoặc **node kibana** (192.168.1.204):
+1. Cấu hình `/opt/filebeat/filebeat.yml`:
+   ```yaml
+   filebeat.inputs:
+   - type: log
+     enabled: true
+     paths:
+       - /var/log/*.log
+   output.logstash:
+     hosts: ["kibana.example.com:5044"]
+     ssl.enabled: true
+     ssl.certificate_authorities: ["/etc/elasticsearch/certs/ca/ca.crt"]
+     ssl.certificate: "/etc/elasticsearch/certs/kibana/kibana.crt"
+     ssl.key: "/etc/elasticsearch/certs/kibana/kibana.key"
+   ```
+
+2. Tạo systemd service `/etc/systemd/system/filebeat.service`:
+   ```ini
+   [Unit]
+   Description=Filebeat
+   After=network.target
+
+   [Service]
+   Type=simple
+   User=elasticsearch
+   Group=elasticsearch
+   ExecStart=/opt/filebeat/filebeat -c /opt/filebeat/filebeat.yml
+   Restart=on-failure
+
+   [Install]
+   WantedBy=multi-user.target
+   ```
+
+3. Khởi động:
+   ```bash
+   sudo systemctl daemon-reload
+   sudo systemctl enable filebeat
+   sudo systemctl start filebeat
+   ```
+
+## Bước 8: Kiểm tra và Bảo mật
+- Kiểm tra cluster: `curl -u elastic:<pass> -k https://master1.example.com:9200/_cat/nodes?v`
+- Kiểm tra Filebeat: `/opt/filebeat/filebeat test output`
+- Tạo index pattern trong Kibana: Stack Management > Index Patterns > Create (e.g., `logstash-*`).
+- Backup certs: `/etc/elasticsearch/certs`.
+- Nếu lỗi cert, kiểm tra quyền và `verification_mode: certificate`.
+
+Tài liệu dựa trên hướng dẫn chính thức Elastic và các nguồn uy tín.
