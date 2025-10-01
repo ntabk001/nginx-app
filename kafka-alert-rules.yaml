@@ -1,0 +1,126 @@
+```yaml
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: kafka-alerts
+  namespace: kafka-ns
+  labels:
+    app: kafka
+    prometheus: monitoring
+spec:
+  groups:
+  - name: kafka-rules
+    rules:
+    - alert: KafkaBrokerDown
+      expr: up{job="kafka"} == 0
+      for: 5m
+      labels:
+        severity: critical
+      annotations:
+        summary: "Kafka Broker Down"
+        description: "Kafka broker {{ $labels.instance }} has been down for more than 5 minutes. Example: Pod kafka-0 in namespace kafka-ns is not responding."
+    - alert: OfflinePartitions
+      expr: sum(kafka_controller_KafkaController_OfflinePartitionsCount{job="kafka"}) by (instance) > 0
+      for: 1m
+      labels:
+        severity: critical
+      annotations:
+        summary: "Offline Partitions Detected"
+        description: "{{ $labels.instance }} has {{ $value }} offline partitions. Example: Broker kafka-1 reports 5 partitions offline, indicating no leader available."
+    - alert: UnderReplicatedPartitions
+      expr: sum(kafka_server_ReplicaManager_UnderReplicatedPartitions{job="kafka"}) by (instance) > 0
+      for: 1m
+      labels:
+        severity: critical
+      annotations:
+        summary: "Under-Replicated Partitions"
+        description: "{{ $labels.instance }} has {{ $value }} under-replicated partitions. Example: Broker kafka-2 has 3 partitions with ISR less than configured replicas."
+    - alert: NoActiveController
+      expr: sum(kafka_controller_KafkaController_ActiveControllerCount{job="kafka"}) by (instance) != 1
+      for: 1m
+      labels:
+        severity: critical
+      annotations:
+        summary: "No Active Kafka Controller"
+        description: "No active controller in cluster on {{ $labels.instance }}. Example: Controller on broker kafka-0 is inactive, leader election may be stalled."
+    - alert: UncleanLeaderElection
+      expr: max(kafka_controller_ControllerStats_UncleanLeaderElectionsPerSec_5MinuteRate{job="kafka"}) by (instance) > 0
+      for: 1m
+      labels:
+        severity: critical
+      annotations:
+        summary: "Unclean Leader Election Detected"
+        description: "{{ $labels.instance }} reported unclean leader elections. Example: Broker kafka-1 performed 2 unclean elections, risking data loss."
+    - alert: HighPartitionCount
+      expr: max(kafka_server_ReplicaManager_PartitionCount{job="kafka"}) by (instance) > 100
+      for: 3m
+      labels:
+        severity: warning
+      annotations:
+        summary: "High Partition Count"
+        description: "{{ $labels.instance }} has {{ $value }} partitions. Example: Broker kafka-0 is managing 150 partitions, consider scaling up."
+    - alert: ConsumerGroupLag
+      expr: sum(kafka_consumergroup_lag{job="kafka"}) by (consumergroup) > 500000
+      for: 60m
+      labels:
+        severity: page
+      annotations:
+        summary: "High Consumer Group Lag"
+        description: "Consumer group {{ $labels.consumergroup }} has lag of {{ $value }} messages. Example: Group 'my-group' has 600,000 unprocessed messages."
+    - alert: TopicOffsetDecreased
+      expr: delta(kafka_burrow_partition_current_offset[1m]) < 0
+      for: 0m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Topic Offset Decreased"
+        description: "Offset for topic {{ $labels.topic }} on {{ $labels.instance }} decreased. Example: Offset dropped by 1000 for topic 'my-topic' on partition 1."
+    - alert: LowISRReplicas
+      expr: sum(kafka_topic_partition_in_sync_replica{job="kafka"}) by (topic) < 3
+      for: 0m
+      labels:
+        severity: page
+      annotations:
+        summary: "Low In-Sync Replicas"
+        description: "Topic {{ $labels.topic }} has {{ $value }} in-sync replicas. Example: Topic 'my-topic' has only 2 in-sync replicas, below minimum 3."
+    - alert: HighRequestLatency
+      expr: histogram_quantile(0.99, sum(rate(kafka_server_RequestHandlerPool_RequestHandlerAvgIdlePercent[5m])) by (le)) > 0.5
+      for: 10m
+      labels:
+        severity: warning
+      annotations:
+        summary: "High Request Latency"
+        description: "99th percentile request latency on {{ $labels.instance }} is {{ $value }}s. Example: Broker kafka-1 has latency of 0.7s, indicating performance issues."
+    - alert: HighCPULoad
+      expr: 100 - (avg by(instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "High CPU Load on Kafka Pod"
+        description: "CPU usage on {{ $labels.instance }} is {{ $value }}%. Example: Pod kafka-0 reports 85% CPU usage, risking performance degradation."
+    - alert: HighMemoryUsage
+      expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 85
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "High Memory Usage on Kafka Pod"
+        description: "Memory usage on {{ $labels.instance }} is {{ $value }}%. Example: Pod kafka-1 is using 90% memory, risking OOM."
+    - alert: PodNotReady
+      expr: kube_pod_status_ready{condition="false", namespace="kafka-ns"} > 0
+      for: 2m
+      labels:
+        severity: critical
+      annotations:
+        summary: "Kafka Pod Not Ready"
+        description: "Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} is not ready. Example: Pod kafka-2 is in CrashLoopBackOff state."
+    - alert: StrimziOperatorDown
+      expr: up{job="strimzi-cluster-operator"} == 0
+      for: 5m
+      labels:
+        severity: critical
+      annotations:
+        summary: "Strimzi Operator Down"
+        description: "Strimzi operator {{ $labels.instance }} is down. Example: Strimzi operator pod in namespace kafka-ns is not responding."
+```
