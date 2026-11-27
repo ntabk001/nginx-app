@@ -87,7 +87,7 @@ export CONTROLLER_KAFKA_HOME="/opt/kafka"                  # Giai đoạn B: /op
 export CONTROLLER_CONF="/opt/kafka/config/controller.properties"   # Giai đoạn B: /opt/kafka-conf-4.4/controller.properties
 
 # Heap theo role
-export BROKER_HEAP="-Xms4g -Xmx4g"
+export BROKER_HEAP="-Xms2g -Xmx2g"
 export CONTROLLER_HEAP="-Xms1g -Xmx1g"
 
 # Cấu hình log4j riêng theo role; để trống khi dùng bản 3.9.2 (dùng log4j.properties mặc định)
@@ -463,7 +463,7 @@ exit 1
 # Kết quả (dòng cuối) dạng: {"version":"1","id":"AbCdEfGhIjKlMnOpQrStUv"}
 ```
 
-Gán vào biến: `CLUSTER_ID=AbCdEfGhIjKlMnOpQrStUv` (controller **phải** dùng đúng cluster ID này). Có thể đối chiếu với `cluster.id` trong `meta.properties` tại `/data/kafka` của broker.
+Gán vào biến: `AbCdEfGhIjKlMnOpQrStUv` (controller **phải** dùng đúng cluster ID này). Có thể đối chiếu với `cluster.id` trong `meta.properties` tại `/data/kafka` của broker.
 
 ### 7.2. Tạo `controller.properties` (trên cả 3 server)
 
