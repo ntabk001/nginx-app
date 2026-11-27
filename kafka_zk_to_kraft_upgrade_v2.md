@@ -99,7 +99,7 @@ export CONTROLLER_LOG4J_OPTS=""
 export KAFKA_EXTRA_OPTS="-XX:-UseBASE64Intrinsics"
 
 export KAFKA_LOG_DIR_BASE="/var/log/kafka"
-export PID_DIR="/opt/kafka-scripts/run"
+export PID_DIR="/opt/kafka/pid"
 export STOP_TIMEOUT=300     # Thời gian chờ tối đa (giây) khi dừng; broker cần thời gian controlled shutdown
 ```
 
@@ -133,7 +133,7 @@ case "$ROLE" in
   *) usage ;;
 esac
 
-PID_FILE="$PID_DIR/kafka-$ROLE.pid"
+PID_FILE="$PID_DIR/kafka.pid"
 LOG_DIR_ROLE="$KAFKA_LOG_DIR_BASE/$ROLE"
 export PATH="$JAVA_HOME/bin:$PATH"
 
